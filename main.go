@@ -26,16 +26,15 @@ var (
 	cloudWatchPublishTimeout    = flag.String("cloudwatch_publish_timeout", os.Getenv("CLOUDWATCH_PUBLISH_TIMEOUT"), "CloudWatch publish timeout in seconds")
 	prometheusScrapeInterval    = flag.String("prometheus_scrape_interval", os.Getenv("PROMETHEUS_SCRAPE_INTERVAL"), "Prometheus scrape interval in seconds")
 	prometheusScrapeUrl         = flag.String("prometheus_scrape_url", os.Getenv("PROMETHEUS_SCRAPE_URL"), "Prometheus scrape URL")
-	certPath                    = flag.String("cert_path", os.Getenv("CERT_PATH"), "Path to SSL Certificate file (when using SSL for `prometheus_scrape_url`)")
-	keyPath                     = flag.String("key_path", os.Getenv("KEY_PATH"), "Path to Key file (when using SSL for `prometheus_scrape_url`)")
-	skipServerCertCheck         = flag.String("accept_invalid_cert", os.Getenv("ACCEPT_INVALID_CERT"), "Accept any certificate during TLS handshake. Insecure, use only for testing")
-	additionalDimension         = flag.String("additional_dimension", os.Getenv("ADDITIONAL_DIMENSION"), "Additional dimension specified by NAME=VALUE")
+	additionalDimensions        = flag.String("additional_dimensions", os.Getenv("ADDITIONAL_DIMENSIONS"), "Additional dimension specified by NAME=VALUE")
 	replaceDimensions           = flag.String("replace_dimensions", os.Getenv("REPLACE_DIMENSIONS"), "replace dimensions specified by NAME=VALUE,...")
 	includeMetrics              = flag.String("include_metrics", os.Getenv("INCLUDE_METRICS"), "Only publish the specified metrics (comma-separated list of glob patterns, e.g. 'up,http_*')")
 	excludeMetrics              = flag.String("exclude_metrics", os.Getenv("EXCLUDE_METRICS"), "Never publish the specified metrics (comma-separated list of glob patterns, e.g. 'tomcat_*')")
 	includeDimensionsForMetrics = flag.String("include_dimensions_for_metrics", os.Getenv("INCLUDE_DIMENSIONS_FOR_METRICS"), "Only publish the specified dimensions for metrics (semi-colon-separated key values of comma-separated dimensions of METRIC=dim1,dim2;, e.g. 'flink_jobmanager=job_id')")
 	excludeDimensionsForMetrics = flag.String("exclude_dimensions_for_metrics", os.Getenv("EXCLUDE_DIMENSIONS_FOR_METRICS"), "Never publish the specified dimensions for metrics (semi-colon-separated key values of comma-separated dimensions of METRIC=dim1,dim2;, e.g. 'flink_jobmanager=job,host;zk_up=host,pod;')")
 	forceHighRes                = flag.Bool("force_high_res", defaultForceHighRes, "Publish all metrics with high resolution, even when original metrics don't have the label "+cwHighResLabel)
+	basicAuthUsername           = flag.String("basic_auth_username", os.Getenv("BASIC_AUTH_USERNAME"), "")
+	basicAuthPassword           = flag.String("basic_auth_password", os.Getenv("BASIC_AUTH_PASSWORD"), "")
 )
 
 // kevValMustParse takes a string and exits with a message if it cannot parse as KEY=VALUE
@@ -104,24 +103,17 @@ func main() {
 		flag.PrintDefaults()
 		log.Fatal("prometheus-to-cloudwatch: Error: -prometheus_scrape_url or PROMETHEUS_SCRAPE_URL required")
 	}
-	if (*certPath != "" && *keyPath == "") || (*certPath == "" && *keyPath != "") {
-		flag.PrintDefaults()
-		log.Fatal("prometheus-to-cloudwatch: Error: when using SSL, both -prometheus_cert_path and -prometheus_key_path are required. If not using SSL, do not provide any of them")
-	}
-
-	var skipCertCheck = true
 	var err error
 
-	if *skipServerCertCheck != "" {
-		if skipCertCheck, err = strconv.ParseBool(*skipServerCertCheck); err != nil {
-			log.Fatal("prometheus-to-cloudwatch: Error: ", err)
+	var additionalDims = map[string]string{}
+	if *additionalDimensions != "" {
+		kvs := strings.Split(*additionalDimensions, ",")
+		if len(kvs) > 0 {
+			for _, rd := range kvs {
+				key, val := keyValMustParse(rd, "-additionalDimension must be formatted as NAME=VALUE,...")
+				additionalDims[key] = val
+			}
 		}
-	}
-
-	var additionalDimensions = map[string]string{}
-	if *additionalDimension != "" {
-		key, val := keyValMustParse(*additionalDimension, "-additionalDimension must be formatted as NAME=VALUE")
-		additionalDimensions[key] = val
 	}
 
 	var replaceDims = map[string]string{}
@@ -168,22 +160,21 @@ func main() {
 	}
 
 	config := &Config{
-		CloudWatchNamespace:           *cloudWatchNamespace,
-		CloudWatchRegion:              *cloudWatchRegion,
-		PrometheusScrapeUrl:           *prometheusScrapeUrl,
-		PrometheusCertPath:            *certPath,
-		PrometheusKeyPath:             *keyPath,
-		PrometheusSkipServerCertCheck: skipCertCheck,
-		AwsAccessKeyId:                *awsAccessKeyId,
-		AwsSecretAccessKey:            *awsSecretAccessKey,
-		AwsSessionToken:               *awsSessionToken,
-		AdditionalDimensions:          additionalDimensions,
-		ReplaceDimensions:             replaceDims,
-		IncludeMetrics:                includeMetricsList,
-		ExcludeMetrics:                excludeMetricsList,
-		ExcludeDimensionsForMetrics:   excludeDimensionsForMetricsList,
-		IncludeDimensionsForMetrics:   includeDimensionsForMetricsList,
-		ForceHighRes:                  *forceHighRes,
+		CloudWatchNamespace:         *cloudWatchNamespace,
+		CloudWatchRegion:            *cloudWatchRegion,
+		PrometheusScrapeUrl:         *prometheusScrapeUrl,
+		AwsAccessKeyId:              *awsAccessKeyId,
+		AwsSecretAccessKey:          *awsSecretAccessKey,
+		AwsSessionToken:             *awsSessionToken,
+		AdditionalDimensions:        additionalDims,
+		ReplaceDimensions:           replaceDims,
+		IncludeMetrics:              includeMetricsList,
+		ExcludeMetrics:              excludeMetricsList,
+		ExcludeDimensionsForMetrics: excludeDimensionsForMetricsList,
+		IncludeDimensionsForMetrics: includeDimensionsForMetricsList,
+		ForceHighRes:                *forceHighRes,
+		BasicAuthUsername:           *basicAuthUsername,
+		BasicAuthPassword:           *basicAuthPassword,
 	}
 
 	if *prometheusScrapeInterval != "" {

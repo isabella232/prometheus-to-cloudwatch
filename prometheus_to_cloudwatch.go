@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -82,15 +81,6 @@ type Config struct {
 	// Prometheus scrape URL
 	PrometheusScrapeUrl string
 
-	// Path to Certificate file
-	PrometheusCertPath string
-
-	// Path to Key file
-	PrometheusKeyPath string
-
-	// Accept any certificate during TLS handshake. Insecure, use only for testing
-	PrometheusSkipServerCertCheck bool
-
 	// Additional dimensions to send to CloudWatch
 	AdditionalDimensions map[string]string
 
@@ -111,24 +101,26 @@ type Config struct {
 
 	// ForceHighRes forces all exported metrics to be sent as custom high-resolution metrics.
 	ForceHighRes bool
+
+	BasicAuthUsername string
+	BasicAuthPassword string
 }
 
 // Bridge pushes metrics to AWS CloudWatch
 type Bridge struct {
-	cloudWatchPublishInterval     time.Duration
-	cloudWatchNamespace           string
-	cw                            *cloudwatch.CloudWatch
-	prometheusScrapeUrl           string
-	prometheusCertPath            string
-	prometheusKeyPath             string
-	prometheusSkipServerCertCheck bool
-	additionalDimensions          map[string]string
-	replaceDimensions             map[string]string
-	includeMetrics                []glob.Glob
-	excludeMetrics                []glob.Glob
-	includeDimensionsForMetrics   []MatcherWithStringSet
-	excludeDimensionsForMetrics   []MatcherWithStringSet
-	forceHighRes                  bool
+	cloudWatchPublishInterval   time.Duration
+	cloudWatchNamespace         string
+	cw                          *cloudwatch.CloudWatch
+	prometheusScrapeUrl         string
+	additionalDimensions        map[string]string
+	replaceDimensions           map[string]string
+	includeMetrics              []glob.Glob
+	excludeMetrics              []glob.Glob
+	includeDimensionsForMetrics []MatcherWithStringSet
+	excludeDimensionsForMetrics []MatcherWithStringSet
+	forceHighRes                bool
+	basicAuthUsername           string
+	basicAuthPassword           string
 }
 
 // NewBridge initializes and returns a pointer to a Bridge using the
@@ -146,9 +138,6 @@ func NewBridge(c *Config) (*Bridge, error) {
 	}
 	b.prometheusScrapeUrl = c.PrometheusScrapeUrl
 
-	b.prometheusCertPath = c.PrometheusCertPath
-	b.prometheusKeyPath = c.PrometheusKeyPath
-	b.prometheusSkipServerCertCheck = c.PrometheusSkipServerCertCheck
 	b.additionalDimensions = c.AdditionalDimensions
 	b.replaceDimensions = c.ReplaceDimensions
 	b.includeMetrics = c.IncludeMetrics
@@ -156,6 +145,8 @@ func NewBridge(c *Config) (*Bridge, error) {
 	b.includeDimensionsForMetrics = c.IncludeDimensionsForMetrics
 	b.excludeDimensionsForMetrics = c.ExcludeDimensionsForMetrics
 	b.forceHighRes = c.ForceHighRes
+	b.basicAuthUsername = c.BasicAuthUsername
+	b.basicAuthPassword = c.BasicAuthPassword
 
 	if c.CloudWatchPublishInterval > 0 {
 		b.cloudWatchPublishInterval = c.CloudWatchPublishInterval
@@ -205,7 +196,7 @@ func (b *Bridge) Run(ctx context.Context) {
 		case <-ticker.C:
 			mfChan := make(chan *dto.MetricFamily, 1024)
 
-			go fetchMetricFamilies(b.prometheusScrapeUrl, mfChan, b.prometheusCertPath, b.prometheusKeyPath, b.prometheusSkipServerCertCheck)
+			go fetchMetricFamilies(b.prometheusScrapeUrl, mfChan, b.basicAuthUsername, b.basicAuthPassword)
 
 			var metricFamilies []*dto.MetricFamily
 			for mf := range mfChan {
@@ -227,9 +218,9 @@ func (b *Bridge) Run(ctx context.Context) {
 }
 
 // NOTE: The CloudWatch API has the following limitations:
-//  - Max 40kb request size
-//	- Single namespace per request
-//	- Max 10 dimensions per metric
+//   - Max 40kb request size
+//   - Single namespace per request
+//   - Max 10 dimensions per metric
 func (b *Bridge) publishMetricsToCloudWatch(mfs []*dto.MetricFamily) (count int, e error) {
 	vec, err := expfmt.ExtractSamples(&expfmt.DecodeOptions{Timestamp: model.Now()}, mfs...)
 
@@ -491,39 +482,17 @@ func getUnit(m model.Metric) string {
 // It returns after all MetricFamilies have been sent
 func fetchMetricFamilies(
 	url string, ch chan<- *dto.MetricFamily,
-	certificate string, key string,
-	skipServerCertCheck bool,
+	username string, password string,
 ) {
 	defer close(ch)
-	var transport *http.Transport
-	if certificate != "" && key != "" {
-		cert, err := tls.LoadX509KeyPair(certificate, key)
-		if err != nil {
-			log.Fatal("prometheus-to-cloudwatch: Error: ", err)
-		}
-		tlsConfig := &tls.Config{
-			Certificates:       []tls.Certificate{cert},
-			InsecureSkipVerify: skipServerCertCheck,
-		}
-		tlsConfig.BuildNameToCertificate()
-		transport = &http.Transport{TLSClientConfig: tlsConfig}
-	} else {
-		transport = &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: skipServerCertCheck},
-		}
-	}
-	client := &http.Client{Transport: transport}
-	decodeContent(client, url, ch)
-	client.CloseIdleConnections()
-}
 
-func decodeContent(client *http.Client, url string, ch chan<- *dto.MetricFamily) {
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		log.Fatalf("prometheus-to-cloudwatch: Error: creating GET request for URL %q failed: %s", url, err)
 	}
 	req.Header.Add("Accept", acceptHeader)
-	resp, err := client.Do(req)
+	req.SetBasicAuth(username, password)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		log.Fatalf("prometheus-to-cloudwatch: Error: executing GET request for URL %q failed: %s", url, err)
 	}
